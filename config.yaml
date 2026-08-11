@@ -20,7 +20,19 @@ llm:
   effort: high            # low | medium | high | xhigh | max
 
 gex:
-  # Set before step 9. The scraper opens this URL and screenshots the chart element.
-  url_template: ""
-  chart_selector: ""
-  timeout_ms: 20000
+  # Sources are tried in order until one yields a chart.
+  #
+  # barchart.com is NOT usable: it sits behind CloudFront bot protection and
+  # returns 403 to headless browsers. Working around that means impersonating a
+  # real browser to defeat their blocking, which we don't do. Left here so the
+  # next person doesn't retry it.
+  #   - url: "https://www.barchart.com/stocks/quotes/{symbol}/gamma-exposure"
+  sources:
+    - url: "https://optioncharts.io/options/{symbol}/gamma-exposure"
+      selector: ".highcharts-container"
+      # The page renders several Highcharts; pick the one whose SVG contains
+      # this text. Wrapper ids are randomly generated per load, so neither an
+      # id nor a fixed index is stable.
+      contains: "Gamma Exposure"
+      settle_ms: 7000        # charts render after load; wait for the paint
+  timeout_ms: 45000
