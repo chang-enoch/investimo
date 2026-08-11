@@ -25,6 +25,12 @@ bot:       📌 Pin/Unpin · 📊 GEX · /gex /add /remove /list /pins
   200 SMA won't match IBKR charts. Sanity check: NVDA pre-2024-06-07 closes ≈ $120.
 - **No test files in this repo.** Verification is a manual pass; keep it lightweight.
 - **GEX never runs during the scheduled scan** — only on button tap or `/gex`.
+- **GEX is a screenshot, not an interpretation.** No vision model reads the chart; the
+  bot sends the image and you read it. Do not add a model here — a misread call wall is
+  worse than no summary, because it would get acted on.
+- **The LLM layer is optional and off by default.** With no `ANTHROPIC_API_KEY`,
+  `crew.plain_report()` renders the same numbers without prose. That is the normal
+  operating mode, not a degraded one.
 
 ## Report sections
 

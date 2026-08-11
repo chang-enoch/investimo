@@ -1,7 +1,7 @@
 scan:
   lookback_days: 300      # calendar days of bars to pull; 200 SMA needs ~290 trading days
   atr_period: 14
-  k: 1.0                  # flag when |close - MA| <= k * ATR
+  k: 0.5                  # flag when |close - MA| <= k * ATR
   rearm_margin: 1.5       # must exit past k * this before it can be "New" again
   mas:
     - {name: ema21,  kind: ema, period: 21}

@@ -170,7 +170,16 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     action, _, symbol = (query.data or "").partition(":")
     store.init()
 
-    if action == "pin":
+    if action == "sym":
+        # Drill-down from a section message into one ticker's actions.
+        await query.answer()
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=f"{symbol}",
+            reply_markup=notify.action_keyboard(symbol, symbol in store.pins()),
+            reply_to_message_id=query.message.message_id,
+        )
+    elif action == "pin":
         store.pin(symbol)
         await query.answer(f"📌 {symbol} pinned")
         await _swap_pin_button(query, symbol, pinned=True)
@@ -188,27 +197,18 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def _swap_pin_button(query, symbol: str, pinned: bool) -> None:
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
-    pin_btn = (
-        InlineKeyboardButton("📍 Unpin", callback_data=f"unpin:{symbol}")
-        if pinned
-        else InlineKeyboardButton("📌 Pin", callback_data=f"pin:{symbol}")
-    )
-    keyboard = InlineKeyboardMarkup(
-        [[pin_btn, InlineKeyboardButton("📊 GEX", callback_data=f"gex:{symbol}")]]
-    )
     try:
-        await query.edit_message_reply_markup(reply_markup=keyboard)
+        await query.edit_message_reply_markup(
+            reply_markup=notify.action_keyboard(symbol, pinned)
+        )
     except Exception:  # noqa: BLE001 - message may be too old to edit
         pass
 
 
 async def _send_gex(chat_id: int, symbol: str, context, reply_to: int | None = None) -> None:
-    cfg, secrets = load_config(), Secrets()
     store.init()
     try:
-        image, summary = await gex.get(symbol, cfg, secrets)
+        image = await gex.get(symbol, load_config())
     except gex.GexNotConfigured as exc:
         await context.bot.send_message(chat_id=chat_id, text=str(exc))
         return
@@ -216,17 +216,12 @@ async def _send_gex(chat_id: int, symbol: str, context, reply_to: int | None = N
         await context.bot.send_message(chat_id=chat_id, text=f"GEX failed for {symbol}: {exc}")
         return
 
-    if image:
-        await context.bot.send_photo(
-            chat_id=chat_id,
-            photo=image,
-            caption=f"📊 {symbol}\n{summary}"[:1024],
-            reply_to_message_id=reply_to,
-        )
-    else:
-        await context.bot.send_message(
-            chat_id=chat_id, text=f"📊 {symbol}\n{summary}", reply_to_message_id=reply_to
-        )
+    await context.bot.send_photo(
+        chat_id=chat_id,
+        photo=image,
+        caption=f"📊 {symbol}",
+        reply_to_message_id=reply_to,
+    )
 
 
 # ---------------------------------------------------------------- entrypoint

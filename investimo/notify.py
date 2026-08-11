@@ -1,17 +1,41 @@
-"""Telegram delivery: the digest, then one message per ticker carrying buttons."""
+"""Telegram delivery.
+
+One message per section, not per ticker — a 58-hit day would otherwise be 60
+separate messages. Telegram attaches inline keyboards per message, so the
+per-ticker Pin/GEX buttons live behind a drill-down: each section message
+carries a keyboard of ticker symbols, and tapping one opens that ticker's own
+message with its actions.
+"""
 
 from __future__ import annotations
 
-import asyncio
 from datetime import date
 
 from .config import Secrets
 from .screener import Hit, Sections
 
-MAX_LEN = 4000  # Telegram caps at 4096
+MAX_LEN = 4000       # Telegram caps at 4096
+MAX_BUTTONS = 36     # keyboard rows get unwieldy past this
+BUTTONS_PER_ROW = 3
 
 
-def _keyboard(symbol: str, pinned: bool):
+def ticker_keyboard(symbols: list[str]):
+    """Grid of symbol buttons that drill into a per-ticker action message."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    rows, row = [], []
+    for sym in symbols[:MAX_BUTTONS]:
+        row.append(InlineKeyboardButton(sym, callback_data=f"sym:{sym}"))
+        if len(row) == BUTTONS_PER_ROW:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
+def action_keyboard(symbol: str, pinned: bool):
+    """Pin/Unpin + GEX for a single ticker."""
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
     pin_btn = (
@@ -24,16 +48,27 @@ def _keyboard(symbol: str, pinned: bool):
     )
 
 
-def _line(hit: Hit, compact: bool = False) -> str:
+def hit_line(hit: Hit, compact: bool = False) -> str:
     r, s = hit.reading, hit.snapshot
-    side = "above" if r.above else "below"
+    side = "▲" if r.above else "▼"
     if compact:
-        return f"{hit.symbol} · {r.name} · {r.distance_atr:.2f} ATR {side}"
+        return f"{hit.symbol} {r.name} {side}{r.distance_atr:.2f}"
+    return (
+        f"{hit.symbol} · {r.name} {side}{r.distance_atr:.2f} ATR · "
+        f"{s.close:,.2f} vs {r.value:,.2f} · slope {r.slope_pct:+.1f}%"
+        f"{' · stacked' if s.stacked else ''}"
+    )
+
+
+def detail_text(hit: Hit) -> str:
+    r, s = hit.reading, hit.snapshot
     return (
         f"{hit.symbol} · {r.name}\n"
-        f"{s.close:,.2f} vs {r.value:,.2f} ({r.distance_atr:.2f} ATR {side})\n"
+        f"close {s.close:,.2f} vs {r.value:,.2f}\n"
+        f"{r.distance_atr:.2f} ATR {'above' if r.above else 'below'}\n"
         f"slope {r.slope_pct:+.2f}% · vol {s.volume_ratio:.1f}x"
-        f"{' · stacked' if s.stacked else ''}"
+        f"{' · 21>50>200' if s.stacked else ''}\n"
+        f"state {hit.state}"
     )
 
 
@@ -48,6 +83,16 @@ def _chunks(text: str, size: int = MAX_LEN):
         text = text[cut:].lstrip("\n")
 
 
+def _dedup(hits: list[Hit]) -> list[str]:
+    """Unique symbols, preserving score order."""
+    seen, out = set(), []
+    for h in hits:
+        if h.symbol not in seen:
+            seen.add(h.symbol)
+            out.append(h.symbol)
+    return out
+
+
 async def send_report(
     report_text: str,
     sections: Sections,
@@ -55,7 +100,7 @@ async def send_report(
     run_date: date,
     secrets: Secrets | None = None,
 ) -> int:
-    """Send the digest plus per-ticker button rows. Returns messages sent."""
+    """Digest, then one message per non-empty section. Returns messages sent."""
     from telegram import Bot
 
     secrets = secrets or Secrets()
@@ -71,24 +116,27 @@ async def send_report(
         await bot.send_message(chat_id=chat, text=chunk)
         sent += 1
 
-    groups = (
+    for title, hits, compact in (
         ("📌 PINNED", sections.pinned, False),
         ("⭐ NEW", sections.new, False),
         ("🔁 REPEAT", sections.repeat, True),
-    )
-    for title, hits, compact in groups:
+    ):
         if not hits:
             continue
-        await bot.send_message(chat_id=chat, text=f"— {title} —")
-        sent += 1
-        for hit in hits:
+        body = "\n".join(hit_line(h, compact) for h in hits)
+        symbols = _dedup(hits)
+        note = (
+            f"\n\n(buttons for the first {MAX_BUTTONS} of {len(symbols)} tickers)"
+            if len(symbols) > MAX_BUTTONS
+            else ""
+        )
+        for i, chunk in enumerate(_chunks(f"— {title} —\n{body}{note}")):
             await bot.send_message(
                 chat_id=chat,
-                text=_line(hit, compact),
-                reply_markup=_keyboard(hit.symbol, hit.symbol in pinned),
+                text=chunk,
+                reply_markup=ticker_keyboard(symbols) if i == 0 else None,
             )
             sent += 1
-            await asyncio.sleep(0.05)  # stay clear of Telegram's rate limit
 
     return sent
 

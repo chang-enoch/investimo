@@ -1,10 +1,10 @@
-"""On-demand GEX capture. Never runs during the scheduled scan.
+"""On-demand GEX screenshots. Never runs during the scheduled scan.
 
-Screenshots a GEX chart with Playwright, hands the image to the vision agent,
-and caches both per (symbol, day) so a second tap skips the browser.
+Screenshots a GEX chart with Playwright and sends it as a photo — no model,
+no interpretation. You read the chart yourself.
 
 `gex.url_template` and `gex.chart_selector` in config.yaml must be set before
-this works — the site is deliberately not hardcoded.
+this works; the site is deliberately not hardcoded.
 """
 
 from __future__ import annotations
@@ -12,8 +12,7 @@ from __future__ import annotations
 from datetime import date
 
 from . import store
-from .config import GEX_DIR, Config, Secrets
-from .crew import read_gex_chart
+from .config import GEX_DIR, Config
 
 
 class GexNotConfigured(RuntimeError):
@@ -48,30 +47,23 @@ async def capture(symbol: str, cfg: Config) -> bytes:
             await browser.close()
 
 
-async def get(
-    symbol: str, cfg: Config, secrets: Secrets, run_date: date | None = None
-) -> tuple[bytes | None, str]:
-    """Chart bytes plus written read, cached per day. Returns (image, summary)."""
+async def get(symbol: str, cfg: Config, run_date: date | None = None) -> bytes:
+    """Chart image, cached per day so a second tap skips the browser."""
     symbol = symbol.upper()
     run_date = run_date or date.today()
 
     cached = store.get_gex(symbol, run_date)
-    if cached:
-        path = cached.get("image_path")
-        data = None
-        if path:
-            try:
-                data = (GEX_DIR / path).read_bytes()
-            except OSError:
-                data = None
-        return data, cached["summary"]
+    if cached and cached.get("image_path"):
+        try:
+            return (GEX_DIR / cached["image_path"]).read_bytes()
+        except OSError:
+            pass  # cached file went missing; re-capture below
 
     image = await capture(symbol, cfg)
-    summary = read_gex_chart(symbol, image, cfg, secrets)
 
     GEX_DIR.mkdir(parents=True, exist_ok=True)
     filename = f"{symbol}_{run_date:%Y%m%d}.png"
     (GEX_DIR / filename).write_bytes(image)
-    store.put_gex(symbol, run_date, filename, summary)
+    store.put_gex(symbol, run_date, filename, "")
 
-    return image, summary
+    return image
