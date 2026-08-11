@@ -1,0 +1,26 @@
+scan:
+  lookback_days: 300      # calendar days of bars to pull; 200 SMA needs ~290 trading days
+  atr_period: 14
+  k: 1.0                  # flag when |close - MA| <= k * ATR
+  rearm_margin: 1.5       # must exit past k * this before it can be "New" again
+  mas:
+    - {name: ema21,  kind: ema, period: 21}
+    - {name: ema50,  kind: ema, period: 50}
+    - {name: sma200, kind: sma, period: 200}
+
+scoring:                  # relative weights; sorts within each section
+  distance: 1.0           # closer to the MA scores higher
+  slope: 0.5              # MA rising
+  stacking: 0.5           # 21 > 50 > 200 intact
+  volume: 0.3             # today's volume vs 20d average
+
+llm:
+  model: claude-opus-5
+  max_tokens: 16000
+  effort: high            # low | medium | high | xhigh | max
+
+gex:
+  # Set before step 9. The scraper opens this URL and screenshots the chart element.
+  url_template: ""
+  chart_selector: ""
+  timeout_ms: 20000

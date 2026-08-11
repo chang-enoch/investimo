@@ -1,0 +1,27 @@
+[project]
+name = "investimo"
+version = "0.1.0"
+description = "Daily EOD moving-average scanner with Telegram delivery"
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.27",
+    "pandas>=2.2",
+    "pandas-market-calendars>=4.4",
+    "pyyaml>=6.0",
+    "pydantic-settings>=2.4",
+    "crewai>=0.80",
+    "langchain-anthropic>=0.3",
+    "python-telegram-bot>=21.6",
+    "playwright>=1.48",
+]
+
+[project.scripts]
+investimo = "investimo.main:cli"
+investimo-bot = "investimo.bot:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["investimo"]

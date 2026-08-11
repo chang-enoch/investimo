@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.investimo.daily</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/eeknoc/Documents/Coding/investimo/.venv/bin/python</string>
+    <string>-m</string>
+    <string>investimo.main</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/eeknoc/Documents/Coding/investimo</string>
+
+  <!-- 16:30 local, Mon-Fri. The NYSE calendar guard inside run_daily() skips
+       holidays, so this only needs to be roughly right. -->
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
+  </array>
+
+  <!-- Run on wake if the machine was asleep at the scheduled time. -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/eeknoc/Documents/Coding/investimo/data/daily.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/eeknoc/Documents/Coding/investimo/data/daily.log</string>
+</dict>
+</plist>
