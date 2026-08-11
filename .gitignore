@@ -4,3 +4,4 @@ data/gex/
 __pycache__/
 *.pyc
 .venv/
+data/*.log
