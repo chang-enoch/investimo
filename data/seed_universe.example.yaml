@@ -1,0 +1,26 @@
+# Copy to `seed_universe.yaml` and edit. That file is gitignored — a watchlist is
+# personal, so it never goes to version control.
+#
+# Read once, on first run only: `universe:` is loaded into SQLite and the file is
+# never consulted again. From there, manage the universe through Telegram
+# (/add, /remove, /list). Deleting the file after the first scan changes nothing.
+#
+# ~50 symbols is a reasonable working set. Anything below `catalog:` is inert —
+# it is a parking lot to pull names back from, not part of the scan.
+
+universe:
+  - AAPL
+  - AMD
+  - AMZN
+  - AVGO
+  - GOOGL
+  - META
+  - MSFT
+  - MU
+  - NVDA
+  - TSM
+
+catalog:
+  - ASML
+  - NFLX
+  - SMCI

@@ -104,4 +104,9 @@ Seeded once from IBKR into `data/seed_universe.yaml` (IBKR watchlists live only 
 Client Portal Web API, whose session needs near-daily 2FA — so we never run a gateway).
 After seeding, manage the universe entirely through Telegram.
 
+`data/seed_universe.yaml` is **gitignored** — a watchlist is personal and this repo is
+public. `data/seed_universe.example.yaml` is the tracked template; copy it to start.
+A missing file is not an error: `load_seed_universe()` returns `[]` and the DB universe
+(already seeded, or built via `/add`) is the source of truth.
+
 Long-form design notes: `~/.claude/plans/i-do-swing-trading-mossy-catmull.md`
