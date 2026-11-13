@@ -2,9 +2,8 @@
 
 The numbers are already final by the time anything here runs — sectioning,
 ordering, distances and scores are all computed in screener.py. These agents
-only turn that payload into prose. If ANTHROPIC_API_KEY is unset, every entry
-point falls back to a deterministic plain-text rendering so the pipeline still
-works end to end.
+only turn that payload into prose. Without ANTHROPIC_API_KEY, or if the agents
+fail for any reason, write_report() returns the deterministic plain_report().
 """
 
 from __future__ import annotations
@@ -17,34 +16,13 @@ from .screener import Hit, Sections
 
 
 def _llm(cfg: Config, secrets: Secrets):
-    from langchain_anthropic import ChatAnthropic
+    from crewai import LLM
 
-    return ChatAnthropic(
-        model=cfg.llm["model"],
-        max_tokens=cfg.llm.get("max_tokens", 16000),
+    return LLM(
+        model=f"anthropic/{cfg.llm.model}",
+        max_tokens=cfg.llm.max_tokens,
         api_key=secrets.anthropic_api_key,
     )
-
-
-def _tools():
-    """LangChain tools the Analyst can call for context we didn't pre-compute."""
-    from langchain_core.tools import tool
-
-    from . import store
-
-    @tool
-    def get_flag_history(symbol: str) -> str:
-        """Prior moving-average approaches for a ticker: which MAs it is currently
-        near, its state (NEW/REPEAT/ARMED), and when the current approach began."""
-        rows = store.flag_history(symbol)
-        return json.dumps(rows) if rows else f"No prior flag history for {symbol}."
-
-    @tool
-    def get_pinned() -> str:
-        """Tickers the user has pinned for ongoing attention."""
-        return ", ".join(sorted(store.pins())) or "none"
-
-    return [get_flag_history, get_pinned]
 
 
 def _hit_payload(hit: Hit) -> dict:
@@ -57,9 +35,9 @@ def _hit_payload(hit: Hit) -> dict:
         "ma_value": round(r.value, 2),
         "distance_atr": round(r.distance_atr, 2),
         "price_is": "above" if r.above else "below",
-        "ma_slope_pct_5d": round(r.slope_pct, 2),
-        "stacked_21_50_200": s.stacked,
-        "volume_vs_20d": round(s.volume_ratio, 2),
+        "ma_slope_pct": round(r.slope_pct, 2),
+        "mas_stacked_bullish": s.stacked,
+        "volume_vs_avg": round(s.volume_ratio, 2),
         "first_entered": hit.first_entered,
         "score": round(hit.score, 3),
     }
@@ -70,7 +48,7 @@ def build_payload(sections: Sections, run_date: date) -> dict:
         "run_date": run_date.isoformat(),
         "pinned": [_hit_payload(h) for h in sections.pinned],
         "new": [_hit_payload(h) for h in sections.new],
-        "repeat": [_hit_payload(h) for h in sections.repeat],
+        "still_in_band_not_reported": sections.repeat_count,
     }
 
 
@@ -83,11 +61,10 @@ recompute, re-rank, or second-guess any of it.
 {payload}
 
 Write one line per entry in the `pinned` and `new` groups: what the setup is and
-what would confirm or invalidate it. Reference the actual numbers given. Use
-get_flag_history when knowing how a name has behaved on previous approaches
-changes the read.
+what would confirm or invalidate it. Reference the actual numbers given.
 
-For `repeat`, write nothing per-name — these are already-seen setups.
+`still_in_band_not_reported` is a count of names already flagged on an earlier
+day and deliberately withheld. Never name or speculate about them.
 
 Rules:
 - One sentence per name, two at most. No preamble, no headers, no bullets.
@@ -103,17 +80,16 @@ Assemble the final Telegram report from the analyst's notes and this data:
 Structure, exactly:
 📌 PINNED
 ⭐ NEW
-🔁 REPEAT — one compact line per name: SYMBOL ma ±N.NN ATR
 
 Keep the ordering exactly as given; it is score-ranked. Omit a section that is
-empty. Open with a single line stating the date and the count of new setups.
+empty. Open with a single line stating the date and the count of new setups. If
+`still_in_band_not_reported` is above zero, close with exactly:
+(N still in band from earlier days)
 Plain text, no markdown formatting characters. Be terse — this is read on a
 phone."""
 
 
 def write_report(sections: Sections, run_date: date, cfg: Config, secrets: Secrets) -> str:
-    payload = build_payload(sections, run_date)
-
     if not secrets.anthropic_api_key:
         return plain_report(sections, run_date)
 
@@ -130,7 +106,6 @@ def write_report(sections: Sections, run_date: date, cfg: Config, secrets: Secre
                 "trader. You are concise and you never overstate a setup."
             ),
             llm=llm,
-            tools=_tools(),
             verbose=False,
             allow_delegation=False,
         )
@@ -143,7 +118,7 @@ def write_report(sections: Sections, run_date: date, cfg: Config, secrets: Secre
             allow_delegation=False,
         )
 
-        blob = json.dumps(payload, indent=2)
+        blob = json.dumps(build_payload(sections, run_date), indent=2)
         crew = Crew(
             agents=[analyst, editor],
             tasks=[
@@ -167,33 +142,13 @@ def write_report(sections: Sections, run_date: date, cfg: Config, secrets: Secre
 
 
 def plain_report(sections: Sections, run_date: date) -> str:
-    """Deterministic fallback. Same information, no LLM."""
+    """Deterministic digest: date and counts. The per-name lines follow in the
+    section messages (notify.section_messages), so they aren't repeated here."""
     lines = [f"Investimo — {run_date:%a %d %b %Y}", f"{len(sections.new)} new setup(s)"]
-
-    def block(title: str, hits: list[Hit], compact: bool = False) -> None:
-        if not hits:
-            return
-        lines.append("")
-        lines.append(title)
-        for h in hits:
-            r, s = h.reading, h.snapshot
-            side = "above" if r.above else "below"
-            if compact:
-                lines.append(f"{h.symbol} {r.name} {r.distance_atr:.2f} ATR {side}")
-            else:
-                lines.append(
-                    f"{h.symbol} ({r.name}) — {s.close:,.2f} vs {r.value:,.2f}, "
-                    f"{r.distance_atr:.2f} ATR {side}, slope {r.slope_pct:+.2f}%, "
-                    f"vol {s.volume_ratio:.1f}x"
-                )
-
-    block("📌 PINNED", sections.pinned)
-    block("⭐ NEW", sections.new)
-    block("🔁 REPEAT", sections.repeat, compact=True)
-
+    if sections.pinned:
+        lines.append(f"{len(sections.pinned)} pinned in band")
     if sections.total == 0:
-        lines.append("")
-        lines.append("Nothing within range today.")
+        lines.append("Nothing new today.")
+    if sections.repeat_count:
+        lines.append(f"({sections.repeat_count} still in band from earlier days)")
     return "\n".join(lines)
-
-

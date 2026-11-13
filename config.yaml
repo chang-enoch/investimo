@@ -1,23 +1,26 @@
 scan:
-  lookback_days: 300      # calendar days of bars to pull; 200 SMA needs ~290 trading days
-  atr_period: 14
-  k: 0.5                  # flag when |close - MA| <= k * ATR
-  rearm_margin: 1.5       # must exit past k * this before it can be "New" again
+  # Any number of moving averages, any periods. `name` labels the report and
+  # keys the per-MA state; `kind` is ema or sma. History length is derived from
+  # the longest one, so there is nothing else to retune when you change these.
   mas:
     - {name: ema21,  kind: ema, period: 21}
     - {name: ema50,  kind: ema, period: 50}
     - {name: sma200, kind: sma, period: 200}
+  k: 0.5                  # flag when |close - MA| <= k * ATR
+  rearm_margin: 1.5       # must exit past k * this before it can be "New" again
+  atr_period: 14
+  slope_bars: 5           # MA slope measured over this many bars
+  volume_window: 20       # volume compared to the average of the prior N bars
 
 scoring:                  # relative weights; sorts within each section
   distance: 1.0           # closer to the MA scores higher
   slope: 0.5              # MA rising
-  stacking: 0.5           # 21 > 50 > 200 intact
-  volume: 0.3             # today's volume vs 20d average
+  stacking: 0.5           # shorter MAs above longer ones (e.g. 21 > 50 > 200)
+  volume: 0.3             # latest volume vs its average
 
-llm:
+llm:                      # only used with ANTHROPIC_API_KEY and `pip install -e '.[llm]'`
   model: claude-opus-5
   max_tokens: 16000
-  effort: high            # low | medium | high | xhigh | max
 
 gex:
   # Sources are tried in order until one yields a chart.

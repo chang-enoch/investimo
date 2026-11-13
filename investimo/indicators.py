@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 import pandas as pd
 
@@ -46,29 +47,28 @@ class MaReading:
     distance: float          # close - MA (signed; positive = price above)
     distance_atr: float      # |distance| / ATR
     above: bool
-    slope_pct: float         # MA change over the last 5 bars, as % of the MA
+    slope_pct: float         # MA change over cfg.slope_bars bars, as % of the MA
 
 
 @dataclass(frozen=True)
 class Snapshot:
     symbol: str
-    as_of: object            # datetime.date
+    as_of: date
     close: float
     atr: float
     volume: float
-    avg_volume_20: float
+    avg_volume: float        # mean of the cfg.volume_window bars before the latest
     mas: dict[str, MaReading]
-    stacked: bool            # 21 > 50 > 200
+    stacked: bool            # shorter MAs above longer ones (e.g. 21 > 50 > 200)
 
     @property
     def volume_ratio(self) -> float:
-        return self.volume / self.avg_volume_20 if self.avg_volume_20 else 1.0
+        return self.volume / self.avg_volume if self.avg_volume else 1.0
 
 
 def compute(symbol: str, df: pd.DataFrame, cfg: Config) -> Snapshot | None:
     """Indicator snapshot for the most recent bar, or None if history is short."""
-    longest = max(m.period for m in cfg.mas)
-    if len(df) < longest + cfg.atr_period:
+    if len(df) < cfg.min_bars:
         return None
 
     close = df["close"]
@@ -84,7 +84,7 @@ def compute(symbol: str, df: pd.DataFrame, cfg: Config) -> Snapshot | None:
         value = float(series.iloc[-1])
         if pd.isna(value):
             continue
-        prior = float(series.iloc[-6]) if len(series) > 6 else value
+        prior = float(series.iloc[-1 - cfg.slope_bars])
         distance = last_close - value
         readings[spec.name] = MaReading(
             name=spec.name,
@@ -95,8 +95,9 @@ def compute(symbol: str, df: pd.DataFrame, cfg: Config) -> Snapshot | None:
             slope_pct=((value - prior) / value * 100) if value else 0.0,
         )
 
-    ordered = [readings[m.name].value for m in cfg.mas if m.name in readings]
-    stacked = all(a > b for a, b in zip(ordered, ordered[1:])) if len(ordered) > 1 else False
+    by_period = sorted((m for m in cfg.mas if m.name in readings), key=lambda m: m.period)
+    ordered = [readings[m.name].value for m in by_period]
+    stacked = len(ordered) > 1 and all(a > b for a, b in zip(ordered, ordered[1:]))
 
     return Snapshot(
         symbol=symbol,
@@ -104,7 +105,7 @@ def compute(symbol: str, df: pd.DataFrame, cfg: Config) -> Snapshot | None:
         close=last_close,
         atr=last_atr,
         volume=float(df["volume"].iloc[-1]),
-        avg_volume_20=float(df["volume"].tail(20).mean()),
+        avg_volume=float(df["volume"].iloc[-1 - cfg.volume_window : -1].mean()),
         mas=readings,
         stacked=stacked,
     )

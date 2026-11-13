@@ -8,29 +8,27 @@ Sources are configured in config.yaml and tried in order.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta
 
-from . import store
-from .config import GEX_DIR, Config
+from .config import GEX_DIR, Config, GexSource
+from .market_data import is_symbol, market_today
 
-
-class GexNotConfigured(RuntimeError):
-    pass
+CACHE_DAYS = 14  # images older than this are deleted on the next capture
 
 
 class GexCaptureFailed(RuntimeError):
     pass
 
 
-async def _shoot(page, source: dict, timeout: int) -> bytes:
+async def _shoot(page, source: GexSource, timeout: int) -> bytes:
     """Screenshot the matching chart element on an already-loaded page."""
-    selector = (source.get("selector") or "").strip()
+    selector = source.selector.strip()
     if not selector:
         return await page.screenshot(type="png", full_page=False)
 
     await page.wait_for_selector(selector, timeout=timeout)
 
-    wanted = (source.get("contains") or "").strip()
+    wanted = source.contains.strip()
     if not wanted:
         return await page.locator(selector).first.screenshot(type="png")
 
@@ -52,11 +50,10 @@ async def _shoot(page, source: dict, timeout: int) -> bytes:
 
 async def capture(symbol: str, cfg: Config) -> bytes:
     """Try each configured source in order; return the first chart obtained."""
-    sources = cfg.gex.get("sources") or []
-    if not sources:
-        raise GexNotConfigured("No gex.sources configured in config.yaml.")
+    if not cfg.gex.sources:
+        raise GexCaptureFailed("No gex.sources configured in config.yaml.")
 
-    timeout = int(cfg.gex.get("timeout_ms", 45000))
+    timeout = cfg.gex.timeout_ms
     errors: list[str] = []
 
     from playwright.async_api import async_playwright
@@ -64,8 +61,8 @@ async def capture(symbol: str, cfg: Config) -> bytes:
     async with async_playwright() as p:
         browser = await p.chromium.launch()
         try:
-            for source in sources:
-                url = source["url"].format(symbol=symbol.upper())
+            for source in cfg.gex.sources:
+                url = source.url.format(symbol=symbol.upper())
                 page = await browser.new_page(viewport={"width": 1440, "height": 1400})
                 try:
                     response = await page.goto(
@@ -73,7 +70,7 @@ async def capture(symbol: str, cfg: Config) -> bytes:
                     )
                     if response and response.status >= 400:
                         raise GexCaptureFailed(f"HTTP {response.status}")
-                    await page.wait_for_timeout(int(source.get("settle_ms", 5000)))
+                    await page.wait_for_timeout(source.settle_ms)
                     return await _shoot(page, source, timeout)
                 except Exception as exc:  # noqa: BLE001 - fall through to next source
                     host = url.split("/")[2]
@@ -86,23 +83,27 @@ async def capture(symbol: str, cfg: Config) -> bytes:
     raise GexCaptureFailed("All GEX sources failed —\n" + "\n".join(errors))
 
 
-async def get(symbol: str, cfg: Config, run_date: date | None = None) -> bytes:
-    """Chart image, cached per day so a second tap skips the browser."""
+async def get(symbol: str, cfg: Config) -> bytes:
+    """Chart image, cached per symbol per market day so a second tap skips the browser."""
     symbol = symbol.upper()
-    run_date = run_date or date.today()
-
-    cached = store.get_gex(symbol, run_date)
-    if cached and cached.get("image_path"):
-        try:
-            return (GEX_DIR / cached["image_path"]).read_bytes()
-        except OSError:
-            pass  # cached file went missing; re-capture below
+    if not is_symbol(symbol):
+        raise GexCaptureFailed(f"{symbol!r} is not a valid ticker.")
+    today = market_today()
+    path = GEX_DIR / f"{symbol}_{today:%Y%m%d}.png"
+    if path.exists():
+        return path.read_bytes()
 
     image = await capture(symbol, cfg)
-
     GEX_DIR.mkdir(parents=True, exist_ok=True)
-    filename = f"{symbol}_{run_date:%Y%m%d}.png"
-    (GEX_DIR / filename).write_bytes(image)
-    store.put_gex(symbol, run_date, filename, "")
-
+    path.write_bytes(image)
+    _prune(today - timedelta(days=CACHE_DAYS))
     return image
+
+
+def _prune(before: date) -> None:
+    for old in GEX_DIR.glob("*_????????.png"):
+        try:
+            if datetime.strptime(old.stem[-8:], "%Y%m%d").date() < before:
+                old.unlink()
+        except ValueError:
+            pass

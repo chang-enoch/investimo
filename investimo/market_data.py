@@ -9,7 +9,9 @@ averages line up with broker charts. Verify with `check_split_adjustment()`.
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import httpx
 import pandas as pd
@@ -17,9 +19,23 @@ import pandas as pd
 from .config import Secrets
 
 BARS_URL = "https://data.alpaca.markets/v2/stocks/bars"
+MARKET_TZ = ZoneInfo("America/New_York")
 
 # Free-tier SIP data is available once it is at least 15 minutes old.
 SIP_DELAY = timedelta(minutes=20)
+
+_SYMBOL = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
+
+
+def is_symbol(text: str) -> bool:
+    """Plausible US equity ticker (AAPL, BRK.B). Guards the DB, file names, and
+    Telegram callback data against arbitrary input."""
+    return bool(_SYMBOL.match(text))
+
+
+def market_today() -> date:
+    """Today's date in New York, regardless of where this machine is."""
+    return datetime.now(MARKET_TZ).date()
 
 
 class MarketDataError(RuntimeError):
@@ -45,8 +61,6 @@ def fetch_bars(
     start: date,
     end: date | None = None,
     secrets: Secrets | None = None,
-    adjustment: str = "split",
-    feed: str = "sip",
     timeout: float = 60.0,
 ) -> dict[str, pd.DataFrame]:
     """Daily OHLCV per symbol, oldest first, indexed by date.
@@ -55,7 +69,7 @@ def fetch_bars(
     """
     if not symbols:
         return {}
-    secrets = secrets or Secrets()
+    headers = _headers(secrets or Secrets())
 
     cutoff = datetime.now(timezone.utc) - SIP_DELAY
     end_dt = datetime.combine(end, datetime.max.time(), timezone.utc) if end else cutoff
@@ -66,8 +80,8 @@ def fetch_bars(
         "timeframe": "1Day",
         "start": start.isoformat(),
         "end": end_dt.isoformat(timespec="seconds").replace("+00:00", "Z"),
-        "adjustment": adjustment,
-        "feed": feed,
+        "adjustment": "split",  # never "all": dividend adjustment skews the 200 SMA
+        "feed": "sip",
         "limit": 10000,
     }
 
@@ -75,7 +89,7 @@ def fetch_bars(
     with httpx.Client(timeout=timeout) as client:
         while True:
             try:
-                resp = client.get(BARS_URL, params=params, headers=_headers(secrets))
+                resp = client.get(BARS_URL, params=params, headers=headers)
             except httpx.ConnectError as exc:
                 raise MarketDataError(
                     f"Cannot reach {BARS_URL}: {exc}\n"
@@ -84,13 +98,15 @@ def fetch_bars(
                     "Cloudflare (1.1.1.1) resolves it — set DNS to 1.1.1.1 in "
                     "System Settings > Network > Details > DNS."
                 ) from exc
-            if resp.status_code == 403:
+            if resp.status_code == 401:
                 raise MarketDataError(
-                    "Alpaca rejected the credentials (403). Check ALPACA_KEY/ALPACA_SECRET."
+                    "Alpaca rejected the credentials (401). Check ALPACA_KEY/ALPACA_SECRET."
                 )
             if resp.status_code == 429:
                 raise MarketDataError("Alpaca rate limit (429). Retry shortly.")
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                # 403 is usually a data-subscription limit, 422 a bad parameter.
+                raise MarketDataError(f"Alpaca HTTP {resp.status_code}: {resp.text[:300]}")
             payload = resp.json()
 
             for sym, bars in (payload.get("bars") or {}).items():
@@ -101,21 +117,19 @@ def fetch_bars(
                 break
             params["page_token"] = token
 
-    out: dict[str, pd.DataFrame] = {}
-    for sym, bars in collected.items():
-        if not bars:
-            continue
-        df = pd.DataFrame(bars)
-        df["date"] = pd.to_datetime(df["t"]).dt.tz_convert("UTC").dt.date
-        df = (
-            df.rename(columns={"o": "open", "h": "high", "l": "low", "c": "close", "v": "volume"})
-            .loc[:, ["date", "open", "high", "low", "close", "volume"]]
-            .drop_duplicates(subset="date")
-            .sort_values("date")
-            .set_index("date")
-        )
-        out[sym] = df
-    return out
+    return {sym: _to_frame(bars) for sym, bars in collected.items() if bars}
+
+
+def _to_frame(bars: list[dict]) -> pd.DataFrame:
+    df = pd.DataFrame(bars)
+    df["date"] = pd.to_datetime(df["t"], utc=True).dt.date
+    return (
+        df.rename(columns={"o": "open", "h": "high", "l": "low", "c": "close", "v": "volume"})
+        .loc[:, ["date", "open", "high", "low", "close", "volume"]]
+        .drop_duplicates(subset="date")
+        .sort_values("date")
+        .set_index("date")
+    )
 
 
 def check_split_adjustment(secrets: Secrets | None = None) -> tuple[bool, str]:

@@ -1,15 +1,13 @@
 """Telegram delivery.
 
-One message per section, not per ticker — a 58-hit day would otherwise be 60
-separate messages. Telegram attaches inline keyboards per message, so the
+One message per section, not per ticker — a heavy day would otherwise be dozens
+of separate messages. Telegram attaches inline keyboards per message, so the
 per-ticker Pin/GEX buttons live behind a drill-down: each section message
 carries a keyboard of ticker symbols, and tapping one opens that ticker's own
 message with its actions.
 """
 
 from __future__ import annotations
-
-from datetime import date
 
 from .config import Secrets
 from .screener import Hit, Sections
@@ -48,27 +46,13 @@ def action_keyboard(symbol: str, pinned: bool):
     )
 
 
-def hit_line(hit: Hit, compact: bool = False) -> str:
+def hit_line(hit: Hit) -> str:
     r, s = hit.reading, hit.snapshot
     side = "▲" if r.above else "▼"
-    if compact:
-        return f"{hit.symbol} {r.name} {side}{r.distance_atr:.2f}"
     return (
         f"{hit.symbol} · {r.name} {side}{r.distance_atr:.2f} ATR · "
-        f"{s.close:,.2f} vs {r.value:,.2f} · slope {r.slope_pct:+.1f}%"
-        f"{' · stacked' if s.stacked else ''}"
-    )
-
-
-def detail_text(hit: Hit) -> str:
-    r, s = hit.reading, hit.snapshot
-    return (
-        f"{hit.symbol} · {r.name}\n"
-        f"close {s.close:,.2f} vs {r.value:,.2f}\n"
-        f"{r.distance_atr:.2f} ATR {'above' if r.above else 'below'}\n"
-        f"slope {r.slope_pct:+.2f}% · vol {s.volume_ratio:.1f}x"
-        f"{' · 21>50>200' if s.stacked else ''}\n"
-        f"state {hit.state}"
+        f"{s.close:,.2f} vs {r.value:,.2f} · slope {r.slope_pct:+.1f}% · "
+        f"vol {s.volume_ratio:.1f}x{' · stacked' if s.stacked else ''}"
     )
 
 
@@ -83,23 +67,24 @@ def _chunks(text: str, size: int = MAX_LEN):
         text = text[cut:].lstrip("\n")
 
 
-def _dedup(hits: list[Hit]) -> list[str]:
-    """Unique symbols, preserving score order."""
-    seen, out = set(), []
-    for h in hits:
-        if h.symbol not in seen:
-            seen.add(h.symbol)
-            out.append(h.symbol)
+def section_messages(sections: Sections) -> list[tuple[str, list[str]]]:
+    """(text, symbols for the button grid) per non-empty section."""
+    out = []
+    for title, hits in (("📌 PINNED", sections.pinned), ("⭐ NEW", sections.new)):
+        if not hits:
+            continue
+        symbols = list(dict.fromkeys(h.symbol for h in hits))  # unique, score order
+        note = (
+            f"\n\n(buttons for the first {MAX_BUTTONS} of {len(symbols)} tickers)"
+            if len(symbols) > MAX_BUTTONS
+            else ""
+        )
+        body = "\n".join(hit_line(h) for h in hits)
+        out.append((f"— {title} —\n{body}{note}", symbols))
     return out
 
 
-async def send_report(
-    report_text: str,
-    sections: Sections,
-    pinned: set[str],
-    run_date: date,
-    secrets: Secrets | None = None,
-) -> int:
+async def send_report(report_text: str, sections: Sections, secrets: Secrets | None = None) -> int:
     """Digest, then one message per non-empty section. Returns messages sent."""
     from telegram import Bot
 
@@ -108,43 +93,18 @@ async def send_report(
     if missing:
         raise RuntimeError(f"Missing {', '.join(m.upper() for m in missing)} in .env")
 
-    bot = Bot(token=secrets.telegram_token)
     chat = secrets.telegram_chat_id
     sent = 0
-
-    for chunk in _chunks(report_text):
-        await bot.send_message(chat_id=chat, text=chunk)
-        sent += 1
-
-    for title, hits, compact in (
-        ("📌 PINNED", sections.pinned, False),
-        ("⭐ NEW", sections.new, False),
-        ("🔁 REPEAT", sections.repeat, True),
-    ):
-        if not hits:
-            continue
-        body = "\n".join(hit_line(h, compact) for h in hits)
-        symbols = _dedup(hits)
-        note = (
-            f"\n\n(buttons for the first {MAX_BUTTONS} of {len(symbols)} tickers)"
-            if len(symbols) > MAX_BUTTONS
-            else ""
-        )
-        for i, chunk in enumerate(_chunks(f"— {title} —\n{body}{note}")):
-            await bot.send_message(
-                chat_id=chat,
-                text=chunk,
-                reply_markup=ticker_keyboard(symbols) if i == 0 else None,
-            )
+    async with Bot(token=secrets.telegram_token) as bot:
+        for chunk in _chunks(report_text):
+            await bot.send_message(chat_id=chat, text=chunk)
             sent += 1
-
+        for text, symbols in section_messages(sections):
+            for i, chunk in enumerate(_chunks(text)):
+                await bot.send_message(
+                    chat_id=chat,
+                    text=chunk,
+                    reply_markup=ticker_keyboard(symbols) if i == 0 else None,
+                )
+                sent += 1
     return sent
-
-
-async def send_text(text: str, secrets: Secrets | None = None) -> None:
-    from telegram import Bot
-
-    secrets = secrets or Secrets()
-    bot = Bot(token=secrets.telegram_token)
-    for chunk in _chunks(text):
-        await bot.send_message(chat_id=secrets.telegram_chat_id, text=chunk)

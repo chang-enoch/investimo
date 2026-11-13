@@ -8,8 +8,12 @@ import time
 from dataclasses import dataclass
 from datetime import date, timedelta
 
+import pandas as pd
+import pandas_market_calendars as mcal
+
 from . import crew, indicators, market_data, notify, screener, store
-from .config import Config, Secrets, load_config, load_seed_universe
+from .config import Config, ConfigError, Secrets, load_config, load_seed_universe
+from .market_data import SIP_DELAY, market_today
 
 
 @dataclass
@@ -19,63 +23,45 @@ class RunResult:
     report: str
     scanned: int
     skipped: list[str]
+    duration_s: float
+    committed: bool = False   # flag_state advanced and run recorded
 
 
 def last_session(on: date | None = None) -> date:
-    """Most recent *completed* NYSE session on or before `on`.
+    """Most recent *completed* NYSE session on or before `on` (default: today).
 
-    Today only counts once the bell has actually rung. Using an in-progress
-    session would take a partial daily bar — wrong close, and volume that reads
-    as a fraction of normal — which quietly corrupts every distance and score.
+    A session counts only once its bar is final: the close has passed and the
+    SIP delay has elapsed. An in-progress session would give a partial bar —
+    wrong close, volume a fraction of normal — and quietly corrupt every
+    distance and score. This holds for explicit dates too.
     """
-    import pandas as pd
-    import pandas_market_calendars as mcal
-
-    explicit = on is not None
-    on = on or date.today()
-    cal = mcal.get_calendar("NYSE")
-    sched = cal.schedule(start_date=on - timedelta(days=14), end_date=on)
-    if sched.empty:
-        return on
-
-    if not explicit and len(sched):
-        now = pd.Timestamp.now(tz="UTC")
-        while len(sched) and now < sched["market_close"].iloc[-1]:
-            sched = sched.iloc[:-1]
-        if sched.empty:
-            return on - timedelta(days=1)
-
-    return sched.index[-1].date()
+    on = on or market_today()
+    sched = mcal.get_calendar("NYSE").schedule(start_date=on - timedelta(days=14), end_date=on)
+    final = sched[sched["market_close"] + SIP_DELAY <= pd.Timestamp.now(tz="UTC")]
+    if final.empty:
+        raise ValueError(f"No completed NYSE session on or before {on}.")
+    return final.index[-1].date()
 
 
 def ensure_universe() -> list[str]:
-    """Load the DB universe, seeding from seed_universe.yaml on first run."""
-    store.init()
-    symbols = store.universe()
-    if not symbols:
-        seeded = load_seed_universe()
-        if seeded:
-            store.seed_universe(seeded)
-            symbols = store.universe()
-    return symbols
+    """Active universe, seeded from seed_universe.yaml the very first time."""
+    if store.never_populated() and (seed := load_seed_universe()):
+        store.add_tickers(seed, source="seed")
+    return store.universe()
 
 
 def scan(
-    run_date: date | None = None,
+    on: date | None = None,
     *,
-    advance_state: bool = True,
     cfg: Config | None = None,
     secrets: Secrets | None = None,
     use_llm: bool = True,
 ) -> RunResult:
-    """Fetch, compute, classify, and write the report.
-
-    advance_state=False leaves flag_state untouched, so an ad-hoc /scan cannot
-    consume a ticker's NEW status before the scheduled report shows it.
-    """
+    """Fetch, compute, classify, and write the report. Writes nothing to the DB:
+    committing state is run_daily's job, after the report is delivered."""
     cfg = cfg or load_config()
     secrets = secrets or Secrets()
-    run_date = last_session(run_date)
+    run_date = last_session(on)
     started = time.monotonic()
 
     symbols = ensure_universe()
@@ -85,81 +71,79 @@ def scan(
             "or use /add in Telegram."
         )
 
-    start = run_date - timedelta(days=cfg.lookback_days + 120)
+    start = run_date - timedelta(days=cfg.lookback_days)
     bars = market_data.fetch_bars(symbols, start=start, end=run_date, secrets=secrets)
 
     snapshots: dict[str, indicators.Snapshot] = {}
     skipped: list[str] = []
     for symbol in symbols:
         df = bars.get(symbol)
-        if df is None or df.empty:
-            skipped.append(symbol)
-            continue
-        snap = indicators.compute(symbol, df, cfg)
-        if snap is None:
+        snap = indicators.compute(symbol, df, cfg) if df is not None else None
+        # A missing bar for run_date (halt, late data) would otherwise be read
+        # as "still in band" and silently turn a NEW into a REPEAT.
+        if snap is None or snap.as_of != run_date:
             skipped.append(symbol)
         else:
             snapshots[symbol] = snap
 
-    pinned = store.pins()
-    sections = screener.classify(snapshots, store.flag_states(), pinned, cfg, run_date)
-
-    if advance_state:
-        for (symbol, ma), (state, first) in sections.state_updates.items():
-            store.set_flag_state(symbol, ma, state, first)
-
+    sections = screener.classify(snapshots, store.flag_states(), store.pins(), cfg, run_date)
     report = (
         crew.write_report(sections, run_date, cfg, secrets)
         if use_llm
         else crew.plain_report(sections, run_date)
     )
-
-    if advance_state:
-        store.record_run(
-            run_date,
-            status="ok",
-            ticker_count=len(snapshots),
-            new_count=len(sections.new),
-            repeat_count=len(sections.repeat),
-            duration_s=round(time.monotonic() - started, 2),
-        )
-
-    return RunResult(run_date, sections, report, len(snapshots), skipped)
+    return RunResult(
+        run_date, sections, report, len(snapshots), skipped,
+        duration_s=round(time.monotonic() - started, 2),
+    )
 
 
 def run_daily(
-    run_date: date | None = None,
+    on: date | None = None,
     *,
     advance_state: bool = True,
     send: bool = True,
     use_llm: bool = True,
 ) -> RunResult:
-    cfg, secrets = load_config(), Secrets()
+    """Scan, deliver, then commit. State only advances once the report is out,
+    so a failed send doesn't consume the day's NEW signals.
+
+    State never advances for a session at or before the last successful run:
+    re-running it would turn every NEW into REPEAT, and replaying an old date
+    would overwrite current state with stale state.
+    """
+    run_date = last_session(on)
+    if advance_state:
+        last_ok = store.last_run(only_ok=True)
+        if last_ok and last_ok["run_date"] >= run_date.isoformat():
+            advance_state = False
+
+    secrets = Secrets()
     try:
-        result = scan(
-            run_date,
-            advance_state=advance_state,
-            cfg=cfg,
-            secrets=secrets,
-            use_llm=use_llm,
-        )
+        cfg = load_config()  # inside the try so a bad config shows up in /status
+        result = scan(run_date, cfg=cfg, secrets=secrets, use_llm=use_llm)
+        if send:
+            asyncio.run(notify.send_report(result.report, result.sections, secrets))
     except Exception as exc:  # noqa: BLE001 - log the failure so /status can see it
         if advance_state:
-            store.init()
-            store.record_run(last_session(run_date), status="error", error=str(exc))
+            store.record_run(run_date, status="error", error=str(exc))
         raise
 
-    if send:
-        asyncio.run(
-            notify.send_report(
-                result.report, result.sections, store.pins(), result.run_date, secrets
-            )
+    if advance_state:
+        store.set_flag_states(result.sections.state_updates)
+        store.record_run(
+            run_date,
+            status="ok",
+            ticker_count=result.scanned,
+            new_count=result.sections.new_count,
+            repeat_count=result.sections.repeat_count,
+            duration_s=result.duration_s,
         )
+        result.committed = True
     return result
 
 
 def status_text() -> str:
-    store.init()
     last = store.last_run()
     if not last:
         return "No runs recorded yet."
@@ -168,12 +152,12 @@ def status_text() -> str:
     lines = [
         f"Last run: {last['run_date']} ({last['status']})",
         f"Scanned {last['ticker_count']} · {last['new_count']} new · "
-        f"{last['repeat_count']} repeat · {last['duration_s']}s",
+        f"{last['repeat_count']} held back · {last['duration_s']}s",
     ]
     if last["error"]:
         lines.append(f"Error: {last['error']}")
 
-    ok = store.last_successful_run()
+    ok = store.last_run(only_ok=True)
     if not ok or ok["run_date"] < expected.isoformat():
         lines.append("")
         lines.append(
@@ -185,7 +169,7 @@ def status_text() -> str:
 
 def cli() -> None:
     p = argparse.ArgumentParser(prog="investimo", description="EOD moving-average scan")
-    p.add_argument("--date", help="replay a past close, YYYY-MM-DD")
+    p.add_argument("--date", help="scan the last session on or before YYYY-MM-DD")
     p.add_argument("--dry-run", action="store_true", help="print, do not send")
     p.add_argument("--no-llm", action="store_true", help="skip the writeup agents")
     p.add_argument("--no-state", action="store_true", help="do not advance flag_state")
@@ -203,14 +187,21 @@ def cli() -> None:
         return
 
     on = date.fromisoformat(args.date) if args.date else None
-    result = run_daily(
-        on,
-        advance_state=not (args.no_state or args.dry_run),
-        send=not args.dry_run,
-        use_llm=not args.no_llm,
-    )
+    try:
+        result = run_daily(
+            on,
+            advance_state=not (args.no_state or args.dry_run),
+            send=not args.dry_run,
+            use_llm=not args.no_llm,
+        )
+    except ConfigError as exc:
+        raise SystemExit(str(exc)) from None
 
     print(result.report)
+    for text, _ in notify.section_messages(result.sections):
+        print(f"\n{text}")
+    if not result.committed and not (args.no_state or args.dry_run):
+        print(f"\n(state not advanced: {result.run_date} was already processed)")
     if result.skipped:
         print(f"\nSkipped (no/short data): {', '.join(result.skipped)}")
 
