@@ -8,13 +8,13 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/eeknoc/Documents/Coding/investimo/.venv/bin/python</string>
+    <string>/path/to/investimo/.venv/bin/python</string>
     <string>-m</string>
     <string>investimo.bot</string>
   </array>
 
   <key>WorkingDirectory</key>
-  <string>/Users/eeknoc/Documents/Coding/investimo</string>
+  <string>/path/to/investimo</string>
 
   <!-- Long-running poller: start at login and restart if it dies. -->
   <key>RunAtLoad</key>
@@ -25,8 +25,8 @@
   <integer>30</integer>
 
   <key>StandardOutPath</key>
-  <string>/Users/eeknoc/Documents/Coding/investimo/data/bot.log</string>
+  <string>/path/to/investimo/data/bot.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/eeknoc/Documents/Coding/investimo/data/bot.log</string>
+  <string>/path/to/investimo/data/bot.log</string>
 </dict>
 </plist>

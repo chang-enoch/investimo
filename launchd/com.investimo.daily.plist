@@ -8,16 +8,17 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/eeknoc/Documents/Coding/investimo/.venv/bin/python</string>
+    <string>/path/to/investimo/.venv/bin/python</string>
     <string>-m</string>
     <string>investimo.main</string>
   </array>
 
   <key>WorkingDirectory</key>
-  <string>/Users/eeknoc/Documents/Coding/investimo</string>
+  <string>/path/to/investimo</string>
 
-  <!-- 16:30 local, Mon-Fri. The NYSE calendar guard inside run_daily() skips
-       holidays, so this only needs to be roughly right. -->
+  <!-- 16:30 LOCAL time, Mon-Fri: adjust if this machine isn't on US Eastern.
+       last_session() resolves to the latest completed NYSE session, so
+       holidays and a late run are both harmless. -->
   <key>StartCalendarInterval</key>
   <array>
     <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
@@ -27,13 +28,14 @@
     <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
   </array>
 
-  <!-- Run on wake if the machine was asleep at the scheduled time. -->
+  <!-- Don't run on load. A slot missed while asleep still runs on wake:
+       launchd coalesces missed StartCalendarInterval fires. -->
   <key>RunAtLoad</key>
   <false/>
 
   <key>StandardOutPath</key>
-  <string>/Users/eeknoc/Documents/Coding/investimo/data/daily.log</string>
+  <string>/path/to/investimo/data/daily.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/eeknoc/Documents/Coding/investimo/data/daily.log</string>
+  <string>/path/to/investimo/data/daily.log</string>
 </dict>
 </plist>

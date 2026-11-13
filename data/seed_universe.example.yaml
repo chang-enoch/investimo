@@ -5,8 +5,7 @@
 # never consulted again. From there, manage the universe through Telegram
 # (/add, /remove, /list). Deleting the file after the first scan changes nothing.
 #
-# ~50 symbols is a reasonable working set. Anything below `catalog:` is inert —
-# it is a parking lot to pull names back from, not part of the scan.
+# ~50 symbols is a reasonable working set; all are fetched in one batched call.
 
 universe:
   - AAPL
@@ -20,7 +19,3 @@ universe:
   - NVDA
   - TSM
 
-catalog:
-  - ASML
-  - NFLX
-  - SMCI

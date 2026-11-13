@@ -1,9 +1,14 @@
 # Scheduling
 
+The plists use `/path/to/investimo` as a placeholder. Substitute your checkout
+while copying:
+
 ```sh
-cp launchd/*.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.investimo.daily.plist
-launchctl load ~/Library/LaunchAgents/com.investimo.bot.plist
+for f in launchd/*.plist; do
+  sed "s#/path/to/investimo#$PWD#g" "$f" > ~/Library/LaunchAgents/"$(basename "$f")"
+done
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.investimo.daily.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.investimo.bot.plist
 ```
 
 Check they're registered:
@@ -17,8 +22,8 @@ Logs land in `data/daily.log` and `data/bot.log`.
 To reload after editing a plist:
 
 ```sh
-launchctl unload ~/Library/LaunchAgents/com.investimo.daily.plist
-launchctl load   ~/Library/LaunchAgents/com.investimo.daily.plist
+launchctl bootout   gui/$(id -u) ~/Library/LaunchAgents/com.investimo.daily.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.investimo.daily.plist
 ```
 
 ## The Mac has to be awake at 16:30
@@ -26,8 +31,14 @@ launchctl load   ~/Library/LaunchAgents/com.investimo.daily.plist
 `launchd` will not wake a sleeping machine for a `StartCalendarInterval` job — it
 runs the job late, on next wake. Schedule a wake a few minutes before:
 
-System Settings → General → Login Items & Extensions → Wake for network access,
-or `sudo pmset repeat wakeorpoweron MTWRF 16:25:00`.
+```sh
+sudo pmset repeat wakeorpoweron MTWRF 16:25:00
+```
 
-If a run is missed entirely, `/status` in Telegram will say so — it flags when the
-last successful run predates the most recent trading session.
+The plist time is local. If this machine isn't on US Eastern, convert 16:30 ET.
+The scan needs 16:20 ET or later; before that it falls back to the previous
+session, whose bar is final.
+
+If the Mac sleeps through several sessions, launchd fires once on wake. That run
+scans only the latest session, so touches on the skipped days are never
+reported. A missed run shows up in `/status`.
